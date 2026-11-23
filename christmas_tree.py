@@ -11,7 +11,9 @@ from collections import deque
 import cv2
 import numpy as np
 
-W, H, GROUND = 960, 640, 592
+W, H, GROUND = 1200, 800, 746
+TREE_HEIGHT, TREE_RADIUS = 620, 282
+TREE_TOP = GROUND - 16 - TREE_HEIGHT
 TAU = 2 * math.pi
 
 
@@ -51,7 +53,6 @@ class Gesture:
         self.fist_since = None
         self.release_until = -100.
         self.open_since = None
-        self.thumb_since = None
         self.last = -100.
 
     def read(self, p, side, now):
@@ -66,22 +67,6 @@ class Gesture:
         if sum(extended) <= 2:
             self.gathered = now
         palm = (p[0] + p[9]) / 2
-        thumb_up = (not any(extended) and distance(4, 5) > .95
-                    and p[2,1]-p[4,1] > .65*scale
-                    and p[3,1]-p[4,1] > .16*scale
-                    and abs(p[2,0]-p[4,0]) < p[2,1]-p[4,1])
-        if thumb_up:
-            if self.thumb_since is None:
-                self.thumb_since = now
-            self.release_until = -100.
-            self.fist_since = None
-            self.open_since = None
-            self.rotation = HandRotation()
-            self.pinch.clear()
-            if now-self.thumb_since >= .3:
-                return 'greeting'
-            return None
-        self.thumb_since = None
         tight_fist = (not any(extended) and distance(4, 5) < .85 and
                       all(np.linalg.norm(p[i]-palm) < .92*scale and
                           distance(i, 0) < distance(i-2, 0)
@@ -137,10 +122,12 @@ def glint(img, x, y, radius, color):
 
 
 class SleighRide:
-    """One right-to-left flight with three parcels released along its path."""
+    """One right-to-left flight with parcels released along its path."""
     duration = 6.
-    parcels = ((115, 22, (80,65,205)), (20, 34, (130,147,35)),
-               (-103, 27, (177,90,143)))
+    parcels = ((225, 24, (185,95,170)), (154, 32, (65,85,205)),
+               (82, 21, (172,147,53)), (16, 36, (85,155,65)),
+               (-58, 26, (80,145,215)), (-137, 30, (170,85,123)),
+               (-213, 23, (152,135,52)))
 
     def __init__(self, start):
         self.start = start
@@ -148,10 +135,23 @@ class SleighRide:
         self.impacts = {}
 
     def position(self, age):
-        return (W+140 - (W+330)*age/self.duration, 137+13*math.sin(age*1.25))
+        return (W+140 - (W+330)*age/self.duration, TREE_TOP+120+12*math.sin(age*1.25))
 
     def draw(self, img, now, bank):
         age = now-self.start
+        # Reveal the lettering behind the rear runner as it crosses the sky.
+        font = cv2.FONT_HERSHEY_SCRIPT_COMPLEX
+        message = 'Merry Christmas'
+        (width,height),baseline = cv2.getTextSize(message,font,1.65,2)
+        left = (W-width)//2-6
+        y = round(self.position(self.duration/2)[1])+16
+        cut = max(0,round(self.position(age)[0]+64)-left)
+        strip = img[y-height-5:y+baseline+5,left:left+width+12]
+        if cut < strip.shape[1]:
+            lettering = strip.copy()
+            for thickness,color in ((5,(27,34,48)),(2,(144,217,250))):
+                cv2.putText(lettering,message,(6,height+5),font,1.65,color,thickness,cv2.LINE_AA)
+            strip[:,cut:] = lettering[:,cut:]
         if age < self.duration:
             x,y = self.position(age)
             # A braided comet tail follows the runners along their recent flight path.
@@ -256,7 +256,6 @@ class Scene:
         self.lights_at = None
         self.openings = {}
         self.star = None
-        self.greeting_at = None
         self.ride = None
         self.swipe_path = deque()
         self.spin = 0.
@@ -271,7 +270,7 @@ class Scene:
         self.bank_limit = 30 + 5*np.sin(position/112) + 3*np.cos(position/47)
         self.deposit = .8*np.exp(-(np.arange(-8,9)/4.5)**2)
         # Overlapping tapered whorls, each with a scalloped lower edge.
-        tier = r.integers(0, 9, 52000)
+        tier = r.integers(0, 9, 92000)
         u = r.random(len(tier)) ** .55
         a = r.uniform(0, TAU, len(tier))
         self.height = 1 - (.08*tier + .24*u + .023*u*np.sin(11*a+tier))
@@ -281,7 +280,7 @@ class Scene:
         self.frost_sites = r.permutation(np.flatnonzero((u > .87) & (self.radius > (24+tier*21)*.78)))[:380]
         # Fill the exposed underside with staggered needles. Leave the trunk visible below.
         skirt = np.random.default_rng(825)
-        count = 19500
+        count = 32000
         angle = skirt.uniform(0, TAU, count)
         reach = skirt.uniform(.56, 1., count)
         radius = 192*reach*skirt.uniform(.64, 1.02, count)
@@ -289,13 +288,14 @@ class Scene:
                   -skirt.uniform(.006,.049,count))
         self.angle = np.concatenate((self.angle, angle))
         self.radius = np.concatenate((self.radius, radius))
+        self.radius *= TREE_RADIUS / 192
         self.height = np.concatenate((self.height, height))
         self.shade = np.concatenate((self.shade, skirt.uniform(.32,.90,count)))
         self.sky = np.zeros((H,W,3),np.uint8)
         self.sky[:] = np.linspace((19,14,10),(34,24,16),H)[:,None,:]
         for x,y in zip(r.integers(W,size=550),r.integers(GROUND,size=550)):
             self.sky[y,x] = r.integers(34,96)
-        self.bulbs = r.uniform(0,1,160)
+        self.bulbs = r.uniform(0,1,240)
         self.palette = [(73,75,255),(40,190,255),(255,130,65),(200,64,255),(110,250,150)]
 
     def opening(self, side, hand, now):
@@ -330,13 +330,13 @@ class Scene:
         growth = min(1., max(0., age / .7))
         cx = W // 2
         # Each pool has a soft falloff and an independently pulsing core.
-        band = img[GROUND-12:GROUND+34, cx-155:cx+156]
-        yy, xx = np.ogrid[-12:34, -155:156]
+        band = img[GROUND-12:GROUND+34, cx-215:cx+216]
+        yy, xx = np.ogrid[-12:34, -215:216]
         glow = np.zeros_like(band, dtype=np.float32)
         for i, color in enumerate(self.palette):
-            center = (i-2)*45
+            center = (i-2)*64
             pulse = .78 + .22*math.sin(age*2+i)
-            d = ((xx-center)/34)**2 + ((yy-10)/7)**2
+            d = ((xx-center)/47)**2 + ((yy-10)/7)**2
             glow += (growth*pulse*(.55*np.exp(-d)+.48*np.exp(-6*d)))[:,:,None]*np.array(color)
         band[:] = np.minimum(255, band + glow)
         growth = self.tree
@@ -346,9 +346,9 @@ class Scene:
         for reach, end_y, bend in [(-99,-4,.8),(86,-6,1.9),(-132,4,2.4),
                                    (121,6,.4),(-52,12,1.2),(46,15,2.7)]:
             u = np.linspace(0, growth, 42)
-            x = cx + reach*u**1.35 + 2*u*np.sin(9*u+bend)
-            y = GROUND-56 + (56+end_y)*(1-(1-u)**3) + 3*u*np.sin(8*u+bend)
-            width = (1-u)**1.2*9.5 + .5
+            x = cx + 1.28*reach*u**1.35 + 2*u*np.sin(9*u+bend)
+            y = GROUND-68 + (68+end_y)*(1-(1-u)**3) + 3*u*np.sin(8*u+bend)
+            width = (1-u)**1.2*12.0 + .5
             edge = np.column_stack((x-width*.55, y+width))
             ridge = np.column_stack((x+width*.55, y-width))
             cv2.fillPoly(img,[np.vstack((edge,ridge[::-1])).astype('int32')],
@@ -364,10 +364,7 @@ class Scene:
                 cv2.polylines(img,[twig.astype('int32')],False,(58,96,122),1,cv2.LINE_AA)
 
     def trigger(self, event, t):
-        if event == 'greeting':
-            if self.greeting_at is None:
-                self.greeting_at = t
-        elif event == 'snow':
+        if event == 'snow':
             self.snowing = True
         elif event == 'star' and self.tree > 0 and self.star is None:
             self.star = t
@@ -388,12 +385,12 @@ class Scene:
             return
         scatter = max(0., (age-1.45)/.35)
         height = self.tree + .035*math.sin(math.pi*self.tree)
-        radius = 4 + 194*(1-height)
+        radius = 4 + TREE_RADIUS*(1-height)
         phase = np.arange(220)*TAU/220
         angle = phase + 3.6*age
         jitter = np.sin(phase*37+1)
         x = W/2+(radius+jitter*2)*np.cos(angle)+scatter*23*np.sin(phase*17)
-        y = (GROUND-5-481*height + .14*radius*np.sin(angle)
+        y = (GROUND-5-(TREE_HEIGHT+11)*height + .14*radius*np.sin(angle)
              + 1.3*np.sin(phase*23) - scatter*17*np.cos(phase*13))
         fade = min(1., age/.09)*(1-scatter)
         strength = fade*(.17+.83*(.5+.5*np.cos(phase*3))**2)
@@ -411,16 +408,34 @@ class Scene:
             setattr(self,layer,fraction*fraction*(3-2*fraction))
         self.spin += .23*dt
         spin = self.spin + self.tree*TAU*.48
+        ridge = np.column_stack((np.arange(W),GROUND-self.bank)).astype('int32')
+        cv2.fillPoly(img,[np.vstack((ridge,[[W-1,H],[0,H]])).astype('int32')],(74,65,55))
+        floor = np.column_stack((np.arange(W-1,-1,-1), np.full(W,GROUND)))
+        cv2.fillPoly(img,[np.vstack((ridge,floor)).astype('int32')],(183,177,164),cv2.LINE_AA)
+        cv2.polylines(img,[ridge],False,(213,209,198),1,cv2.LINE_AA)
+        if self.lights_at is not None:
+            self.draw_base(img,t)
         if self.tree > 0:
             growth = self.tree
             a = self.angle + spin
             depth = np.sin(a)
             x = (W/2+self.radius*np.cos(a)).astype(int)
-            y = (GROUND-16-470*self.height + .16*self.radius*depth).astype(int)
+            y = (GROUND-16-TREE_HEIGHT*self.height + .16*self.radius*depth).astype(int)
             visible = self.height <= growth
             light = self.shade*(.65+.35*depth)
             colors = np.column_stack((32+85*light,45+182*light,12+95*light))
             leaf_y, leaf_x = y[visible], x[visible]
+            root_top = GROUND-86
+            overlap = leaf_y >= root_top
+            if overlap.any():
+                rows = leaf_y[overlap] - root_top
+                cols = leaf_x[overlap]
+                left = np.full(H-root_top,W)
+                right = np.full(H-root_top,-1)
+                np.minimum.at(left,rows,cols)
+                np.maximum.at(right,rows,cols)
+                for row in np.flatnonzero(right >= left):
+                    img[root_top+row,left[row]:right[row]+1] = (23,53,24)
             needles = colors[visible].astype(np.uint8)
             # A shaded pixel below each tip fills the canopy without flattening the tiers.
             img[leaf_y+1,leaf_x] = (needles * .62).astype(np.uint8)
@@ -437,7 +452,7 @@ class Scene:
                 for n in rim:
                     glint(img,x[n],y[n],8,(154,231,209))
             if growth >= 1 and self.decor >= 1 and self.star is not None and self.flakes:
-                near_tree = sum(100 < fy < GROUND-25 and abs(fx-W/2) < (fy-96)*.38
+                near_tree = sum(TREE_TOP < fy < GROUND-25 and abs(fx-W/2) < (fy-TREE_TOP)*TREE_RADIUS/TREE_HEIGHT
                                 for fx,fy,*_ in self.flakes)
                 self.frost = min(len(self.frost_sites), self.frost + dt*min(18,near_tree*.23))
             sites = self.frost_sites[:int(self.frost)]
@@ -445,19 +460,19 @@ class Scene:
             img[y[front],x[front]] = (205,210,202)
             img[y[front],x[front]+1] = (155,170,158)
             sweep = None
-            if self.greeting_at is not None:
-                elapsed = t-self.greeting_at
+            if self.ride is not None:
+                elapsed = t-self.ride.start-2.6
                 if 0 <= elapsed < 1.55:
                     sweep = -.15 + 1.3*elapsed/1.55
             if self.decor > 0:
                 for i,h in enumerate(self.bulbs):
                     if h > min(growth,self.decor):
                         continue
-                    angle = TAU*5*h + spin
-                    rad = 185*(1-h)
+                    angle = TAU*6*h + spin
+                    rad = TREE_RADIUS*.97*(1-h)
                     if math.sin(angle) < -.18:
                         continue
-                    pos = (int(W/2+rad*math.cos(angle)),int(GROUND-16-470*h+.16*rad*math.sin(angle)))
+                    pos = (int(W/2+rad*math.cos(angle)),int(GROUND-16-TREE_HEIGHT*h+.16*rad*math.sin(angle)))
                     color = self.palette[i%5]
                     flash = max(0.,1-abs(h-sweep)/.15) if sweep is not None else 0.
                     twinkle = (.5+.5*math.sin(t*3.1+i*2.4))**5
@@ -470,14 +485,14 @@ class Scene:
                     cv2.circle(img,pos,3+round(3*flash),color,-1,cv2.LINE_AA)
                     cv2.circle(img,pos,1,(225,245,255),-1)
             if self.star is not None and growth >= 1:
-                cx,cy = W//2,GROUND-495
+                cx,cy = W//2,TREE_TOP-12
                 pulse = 1+.13*math.sin(4*(t-self.star))
                 angles = np.arange(10)*math.pi/5-math.pi/2
-                radius = np.tile([19,8],5)*pulse
+                radius = np.tile([25,10],5)*pulse
                 pts = np.column_stack((cx+radius*np.cos(angles),cy+radius*np.sin(angles))).astype('int32')
                 for j in range(8):
                     a = j*TAU/8 + .13*t
-                    cv2.line(img,(cx,cy),(int(cx+35*pulse*math.cos(a)),int(cy+35*pulse*math.sin(a))),(65,150,210),1,cv2.LINE_AA)
+                    cv2.line(img,(cx,cy),(int(cx+42*pulse*math.cos(a)),int(cy+42*pulse*math.sin(a))),(65,150,210),1,cv2.LINE_AA)
                 cv2.fillPoly(img,[pts],(115,225,255),cv2.LINE_AA)
         if self.snowing:
             self.credit += dt*62
@@ -509,29 +524,10 @@ class Scene:
                     cv2.ellipse(img,center,axes,22*sway,0,360,(tone+8,tone+4,tone),
                                 -1,cv2.LINE_AA,4)
         self.flakes = falling
-        ridge = np.column_stack((np.arange(W),GROUND-self.bank)).astype('int32')
-        cv2.fillPoly(img,[np.vstack((ridge,[[W-1,H],[0,H]])).astype('int32')],(74,65,55))
-        floor = np.column_stack((np.arange(W-1,-1,-1), np.full(W,GROUND)))
-        cv2.fillPoly(img,[np.vstack((ridge,floor)).astype('int32')],(183,177,164),cv2.LINE_AA)
-        cv2.polylines(img,[ridge],False,(213,209,198),1,cv2.LINE_AA)
-        if self.lights_at is not None:
-            self.draw_base(img,t)
         if 'tree' in self.started:
             self.draw_growth_ring(img,t-self.started['tree'])
         if self.ride is not None:
             self.ride.draw(img,t,self.bank)
-        if self.greeting_at is not None:
-            font = cv2.FONT_HERSHEY_SCRIPT_COMPLEX
-            message = 'Merry Christmas'
-            (width,height),_ = cv2.getTextSize(message,font,1.65,2)
-            origin = ((W-width)//2, 22+height)
-            header = img[:origin[1]+18]
-            lettering = header.copy()
-            cv2.putText(lettering,message,origin,font,1.65,(27,34,48),5,cv2.LINE_AA)
-            cv2.putText(lettering,message,origin,font,1.65,(144,217,250),2,cv2.LINE_AA)
-            alpha = min(1., max(0., (t-self.greeting_at)/.95))
-            alpha = alpha*alpha*(3-2*alpha)
-            cv2.addWeighted(lettering,alpha,header,1-alpha,0,dst=header)
         return cv2.addWeighted(img,1,cv2.GaussianBlur(img,(0,0),3),.45,0)
 
 
@@ -543,7 +539,6 @@ class WinterAudio:
         self.folder = tempfile.TemporaryDirectory(prefix='christmas-audio-')
         self.players = {}
         self.played_layers = set()
-        self.snow_started = False
         self.star_played = False
         self.ride = None
         self.landed = set()
@@ -559,24 +554,26 @@ class WinterAudio:
         rng = np.random.default_rng(1225)
         def clock(seconds):
             return np.arange(round(self.rate*seconds))/self.rate
-        snow_rng = np.random.default_rng(101)
-        def powder(seconds, clusters):
-            samples = np.zeros(round(self.rate*seconds))
-            for onset, span, grains, level in clusters:
-                for _ in range(grains):
-                    offset = snow_rng.uniform(0, span)
-                    start = round((onset+offset)*self.rate)
-                    u = clock(snow_rng.uniform(.014,.045))
-                    noise = snow_rng.normal(size=len(u))
-                    soft = np.convolve(noise,np.hanning(13)/6,mode='same')
-                    soft -= np.convolve(soft,np.ones(49)/49,mode='same')
-                    envelope = np.sin(np.linspace(0,np.pi,len(u)))**2
-                    samples[start:start+len(u)] += level*(1-.65*offset/span)*soft*envelope
-            return samples
-        self.save('snow_start',powder(.85,[(.02,.62,105,.14)]))
-        clusters = [(t,snow_rng.uniform(.12,.32),18,.055)
-                    for t in (.8,3.7,5.1,8.5,12.7,14.4,18.1)]
-        self.save('snow_settle',powder(20,clusters))
+        # Original music-box phrase in 6/8, with rests between the phrases.
+        beat = .48
+        music = np.zeros(round(self.rate*48*beat))
+        def music_note(step, midi, volume):
+            start = round(step*beat*self.rate)
+            u = clock(2.1)
+            freq = 440*2**((midi-69)/12)
+            tone = (np.sin(TAU*freq*u)+.27*np.exp(-3*u)*np.sin(TAU*2*freq*u)
+                    +.13*np.exp(-5*u)*np.sin(TAU*3.01*freq*u))
+            note = volume*(1-np.exp(-48*u))*np.exp(-2.8*u)*tone
+            length = min(len(note),len(music)-start)
+            music[start:start+length] += note[:length]
+        for bar,(bass,phrase) in enumerate([
+                (53,(69,72,76)),(48,(74,72,67)),(50,(65,69,72)),(46,(70,69,65)),
+                (53,(69,72,77)),(50,(76,72,69)),(48,(67,71,74)),(53,(72,69,65))]):
+            music_note(bar*6,bass,.033)
+            for step,pitch in zip((0,2,3),phrase):
+                music_note(bar*6+step,pitch,.063)
+        music[-self.rate//2:] *= np.linspace(1,0,self.rate//2)
+        self.save('snow_music',music)
         t = clock(1.9)
         chime = np.zeros_like(t)
         for onset,freq in [(0,784),(.13,988),(.27,1319)]:
@@ -631,12 +628,8 @@ class WinterAudio:
             if layer not in self.played_layers:
                 self.play(layer)
                 self.played_layers.add(layer)
-        if scene.snowing:
-            if not self.snow_started:
-                self.play('snow_start')
-                self.snow_started = True
-            elif 'snow_start' not in self.players and 'snow_settle' not in self.players:
-                self.play('snow_settle')
+        if scene.snowing and 'snow_music' not in self.players:
+            self.play('snow_music')
         if scene.star is not None and scene.tree >= 1 and not self.star_played:
             self.play('star')
             self.star_played = True
@@ -657,7 +650,6 @@ class WinterAudio:
             p.wait()
         self.players.clear()
         self.played_layers.clear()
-        self.snow_started = False
         self.star_played = False
         self.ride = None
         self.landed.clear()
