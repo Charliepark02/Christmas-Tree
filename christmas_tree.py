@@ -119,6 +119,23 @@ class Gesture:
         self.rotation = HandRotation()
 
 
+def glint(img, x, y, radius, color):
+    """Add a soft halo and a narrow four-point diffraction sparkle."""
+    x,y,r = round(x),round(y),max(2,round(radius))
+    h,w = img.shape[:2]
+    x0,x1 = max(0,x-r),min(w,x+r+1)
+    y0,y1 = max(0,y-r),min(h,y+r+1)
+    if x0 >= x1 or y0 >= y1:
+        return
+    yy,xx = np.ogrid[y0-y:y1-y,x0-x:x1-x]
+    halo = np.exp(-4*(xx*xx+yy*yy)/(r*r))*.32
+    rays = np.maximum(np.maximum(0,1-abs(xx)/1.4)*(1-abs(yy)/r)**2,
+                      np.maximum(0,1-abs(yy)/1.4)*(1-abs(xx)/r)**2)
+    light = ((halo+rays)[:,:,None]*color).clip(0,255).astype(np.uint8)
+    patch = img[y0:y1,x0:x1]
+    cv2.add(patch,light,dst=patch)
+
+
 class SleighRide:
     """One right-to-left flight with three parcels released along its path."""
     duration = 6.
@@ -128,6 +145,7 @@ class SleighRide:
     def __init__(self, start):
         self.start = start
         self.landed = set()
+        self.impacts = {}
 
     def position(self, age):
         return (W+140 - (W+330)*age/self.duration, 137+13*math.sin(age*1.25))
@@ -136,6 +154,15 @@ class SleighRide:
         age = now-self.start
         if age < self.duration:
             x,y = self.position(age)
+            # A braided comet tail follows the runners along their recent flight path.
+            for k in range(52):
+                lag = k/51
+                tx,ty = self.position(max(0,age-.75*lag))
+                phase = 12*lag+age*5
+                px = tx+55+8*math.sin(k*23)
+                py = ty+16+(5+11*lag)*math.sin(phase+k%2*math.pi)
+                tint = (118,210,255) if k%2 else (242,167,225)
+                glint(img,px,py,2+4*(1-lag),tuple(c*(1-lag)**.8 for c in tint))
             self.draw_team(img, round(x), round(y), age)
         for offset,size,color in self.parcels:
             target = W//2 + offset
@@ -151,6 +178,11 @@ class SleighRide:
             cy = min(floor, y+8+32*elapsed+215*elapsed**2)
             if cy >= floor:
                 self.landed.add(size)
+                self.impacts.setdefault(size,now)
+            else:
+                for k in range(5):
+                    glint(img,cx+5*math.sin(7*elapsed+k),cy-9*k,5-k*.6,
+                          (110-k*16,190-k*27,245-k*35))
             angle = 12*math.sin(elapsed*5)*min(1,max(0,(floor-cy)/45))
             def panel(left,top,right,bottom,paint):
                 corners = np.array([[left,top],[right,top],[right,bottom],[left,bottom]])*size
@@ -163,6 +195,17 @@ class SleighRide:
             for direction in (-1,1):
                 cv2.ellipse(img,(cx+direction*size//8,round(cy-size*.56)),
                             (size//7,3),direction*25-angle,0,360,(121,217,253),1,cv2.LINE_AA)
+
+            shimmer = (.5+.5*math.sin(3*elapsed+size))**4
+            glint(img,cx+2,cy-size*.50,3+8*shimmer,(110,200,250))
+            if size in self.impacts:
+                u = (now-self.impacts[size])/.75
+                if 0 <= u < 1:
+                    for k in range(17):
+                        a = math.pi*(k+.5)/17
+                        reach = (32+11*math.sin(17*k))*u
+                        glint(img,cx+reach*math.cos(a),floor+size/2-reach*math.sin(a)+12*u*u,
+                              2+4*(1-u),tuple(v*(1-u) for v in (160,218,255)))
 
     @staticmethod
     def draw_team(img,x,y,age):
@@ -382,6 +425,17 @@ class Scene:
             # A shaded pixel below each tip fills the canopy without flattening the tiers.
             img[leaf_y+1,leaf_x] = (needles * .62).astype(np.uint8)
             img[leaf_y,leaf_x] = needles
+            # Fixed leaf sites rotate with the canopy; only their brightness oscillates.
+            specks = np.arange(71,len(x),283)
+            pulse = (.5+.5*np.sin(2.8*t+specks*1.618))**8
+            for j in np.flatnonzero(visible[specks] & (depth[specks] > 0) & (pulse > .38)):
+                n = specks[j]
+                glint(img,x[n],y[n],3+5*pulse[j],(110*pulse[j],219*pulse[j],158*pulse[j]))
+            if growth < 1:
+                rim = specks[(self.height[specks] <= growth) &
+                             (self.height[specks] > growth-.09)]
+                for n in rim:
+                    glint(img,x[n],y[n],8,(154,231,209))
             if growth >= 1 and self.decor >= 1 and self.star is not None and self.flakes:
                 near_tree = sum(100 < fy < GROUND-25 and abs(fx-W/2) < (fy-96)*.38
                                 for fx,fy,*_ in self.flakes)
@@ -406,6 +460,11 @@ class Scene:
                     pos = (int(W/2+rad*math.cos(angle)),int(GROUND-16-470*h+.16*rad*math.sin(angle)))
                     color = self.palette[i%5]
                     flash = max(0.,1-abs(h-sweep)/.15) if sweep is not None else 0.
+                    twinkle = (.5+.5*math.sin(t*3.1+i*2.4))**5
+                    ignition = max(0.,1-(self.decor-h)/.11) if self.decor < 1 else 0.
+                    energy = max(twinkle,ignition,flash)
+                    if energy > .32:
+                        glint(img,*pos,5+11*energy,tuple(c*energy for c in color))
                     if flash:
                         color = tuple(round(c+(255-c)*flash) for c in color)
                     cv2.circle(img,pos,3+round(3*flash),color,-1,cv2.LINE_AA)
@@ -484,6 +543,7 @@ class WinterAudio:
         self.folder = tempfile.TemporaryDirectory(prefix='christmas-audio-')
         self.players = {}
         self.played_layers = set()
+        self.snow_started = False
         self.star_played = False
         self.ride = None
         self.landed = set()
@@ -499,12 +559,24 @@ class WinterAudio:
         rng = np.random.default_rng(1225)
         def clock(seconds):
             return np.arange(round(self.rate*seconds))/self.rate
-        t = clock(12)
-        # Smooth noise and gently modulate it for a quiet, looping wind bed.
-        noise = rng.normal(size=len(t))
-        wind = np.convolve(noise,np.hanning(37)/19,mode='same')
-        fade = np.minimum(1,np.minimum(t,12-t)*2)
-        self.save('wind',wind*fade*(.16+.06*np.sin(TAU*t/6)))
+        snow_rng = np.random.default_rng(101)
+        def powder(seconds, clusters):
+            samples = np.zeros(round(self.rate*seconds))
+            for onset, span, grains, level in clusters:
+                for _ in range(grains):
+                    offset = snow_rng.uniform(0, span)
+                    start = round((onset+offset)*self.rate)
+                    u = clock(snow_rng.uniform(.014,.045))
+                    noise = snow_rng.normal(size=len(u))
+                    soft = np.convolve(noise,np.hanning(13)/6,mode='same')
+                    soft -= np.convolve(soft,np.ones(49)/49,mode='same')
+                    envelope = np.sin(np.linspace(0,np.pi,len(u)))**2
+                    samples[start:start+len(u)] += level*(1-.65*offset/span)*soft*envelope
+            return samples
+        self.save('snow_start',powder(.85,[(.02,.62,105,.14)]))
+        clusters = [(t,snow_rng.uniform(.12,.32),18,.055)
+                    for t in (.8,3.7,5.1,8.5,12.7,14.4,18.1)]
+        self.save('snow_settle',powder(20,clusters))
         t = clock(1.9)
         chime = np.zeros_like(t)
         for onset,freq in [(0,784),(.13,988),(.27,1319)]:
@@ -559,8 +631,12 @@ class WinterAudio:
             if layer not in self.played_layers:
                 self.play(layer)
                 self.played_layers.add(layer)
-        if scene.snowing and 'wind' not in self.players:
-            self.play('wind')
+        if scene.snowing:
+            if not self.snow_started:
+                self.play('snow_start')
+                self.snow_started = True
+            elif 'snow_start' not in self.players and 'snow_settle' not in self.players:
+                self.play('snow_settle')
         if scene.star is not None and scene.tree >= 1 and not self.star_played:
             self.play('star')
             self.star_played = True
@@ -581,6 +657,7 @@ class WinterAudio:
             p.wait()
         self.players.clear()
         self.played_layers.clear()
+        self.snow_started = False
         self.star_played = False
         self.ride = None
         self.landed.clear()
